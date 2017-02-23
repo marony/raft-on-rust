@@ -31,13 +31,14 @@ impl Setting {
 // TODO: ディスクに保存する
 #[derive(Debug)]
 pub struct PersistentState {
-    pub role: Role,
-    pub receive_time: time::Instant,
+    pub current_term: u32,
+    pub voted_for: Option<u16>,
+    pub logs: Vec<u8>,
 }
 
 impl PersistentState {
     pub fn new() -> PersistentState {
-        PersistentState { role: Role::Follower, receive_time: time::Instant::now() }
+        PersistentState { current_term: 0, voted_for: None, logs: vec![] }
     }
 }
 

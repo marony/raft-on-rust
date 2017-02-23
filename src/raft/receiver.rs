@@ -66,7 +66,7 @@ struct Follower {
 impl Follower {
     pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Follower {
         {
-            // FIXME: 場所がよくない
+            // FIXME: 場所がよくない(on_roleだけでやりたい)
             // 受信時刻を更新
             let mut shared = state.shared.write().unwrap();
             shared.receive_time = time::Instant::now();
@@ -97,12 +97,23 @@ impl RaftNode for Follower {
     }
 
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive({}):", self.setting.server_index);
+        debug!("on_receive({}): {:?}", self.setting.server_index, message);
+        // TODO: AppendEntriesに返事をする
+        match *message {
+            message::Message::AppendEntries(term, leader_id, prev_log_index, prev_log_term, ref entries, leader_commit) => {
+                ()
+            },
+            message::Message::RequestVote(term, candidate_id, last_log_index, last_log_term) => {
+                ()
+            },
+            message::Message::Test => {
+            }
+            _ => {}
+        };
         Some(())
     }
     fn process(&self) -> Option<()> {
         debug!("process({}):", self.setting.server_index);
-        // TODO: AppendEntriesに返事をする
         // TODO: AppendEntriesか選挙がタイムアウトしたらCandidateになる
         Some(())
     }
