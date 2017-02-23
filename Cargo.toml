@@ -1,0 +1,10 @@
+[package]
+name = "raft-rust"
+version = "0.1.0"
+authors = ["marony <marony@binbo-kodakusan.com>"]
+
+[dependencies]
+log = "*"
+env_logger = "*"
+bincode = "*"
+rustc-serialize = "*"
