@@ -44,12 +44,12 @@ trait RaftNode : Debug {
     fn out_role(&self, to_role: &entity::Role) -> ();
 
     fn on_receive_for_all(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive_for_all: {:?}", self);
+        debug!("on_receive_for_all({}):", self.get_setting().server_index);
         Some(())
     }
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()>;
     fn process_for_all(&self) -> Option<()> {
-        debug!("process_for_all: {:?}", self);
+        debug!("process_for_all({}):", self.get_setting().server_index);
         // TODO: commitIndex, lastAppliedのチェック
         // TODO: 受信時 term, currentTermのチェック
         Some(())
@@ -87,21 +87,21 @@ impl RaftNode for Follower {
     }
 
     fn on_role(&self, from_role: &entity::Role) -> () {
-        debug!("on_role: {:?}", self);
+        debug!("on_role({}):", self.setting.server_index);
         // 受信時刻を更新
         let mut shared = self.state.shared.write().unwrap();
         shared.receive_time = time::Instant::now();
     }
     fn out_role(&self, to_role: &entity::Role) -> () {
-        debug!("out_role: {:?}", self);
+        debug!("out_role({}):", self.setting.server_index);
     }
 
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive: {:?}", self);
+        debug!("on_receive({}):", self.setting.server_index);
         Some(())
     }
     fn process(&self) -> Option<()> {
-        debug!("process: {:?}", self);
+        debug!("process({}):", self.setting.server_index);
         // TODO: AppendEntriesに返事をする
         // TODO: AppendEntriesか選挙がタイムアウトしたらCandidateになる
         Some(())
@@ -132,22 +132,22 @@ impl RaftNode for Candidate{
     }
 
     fn on_role(&self, from_role: &entity::Role) -> () {
-        debug!("on_role: {:?}", self);
+        debug!("on_role({}):", self.setting.server_index);
         // TODO: currentTerm更新
         // TODO: 自分に投票
         // TODO: election_timeoutをリセット
         // TODO: RequestVote RPCを他のノードに送信
     }
     fn out_role(&self, to_role: &entity::Role) -> () {
-        debug!("out_role: {:?}", self);
+        debug!("out_role({}):", self.setting.server_index);
     }
 
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive: {:?}", self);
+        debug!("on_receive({}):", self.setting.server_index);
         Some(())
     }
     fn process(&self) -> Option<()> {
-        debug!("process: {:?}", self);
+        debug!("process({}):", self.setting.server_index);
         // TODO: マジョリティから投票を受け取ったらLeaderになる
         // TODO: 新しいリーダからAppendEntriesを受け取ったらFollowerになる
         // TODO: election_timeoutしたら新規に選挙を始める
@@ -179,19 +179,19 @@ impl RaftNode for Leader {
     }
 
     fn on_role(&self, from_role: &entity::Role) -> () {
-        debug!("on_role: {:?}", self);
+        debug!("on_role({}):", self.setting.server_index);
         // TODO: 選挙が終わったら最初の空のAppendEntriesを送信する
     }
     fn out_role(&self, to_role: &entity::Role) -> () {
-        debug!("out_role: {:?}", self);
+        debug!("out_role({}):", self.setting.server_index);
     }
 
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive: {:?}", self);
+        debug!("on_receive({}):", self.setting.server_index);
         Some(())
     }
     fn process(&self) -> Option<()> {
-        debug!("process: {:?}", self);
+        debug!("process({}):", self.setting.server_index);
         // ？？？ TODO: アイドル状態の時にelection_timeoutを防ぐために
         // TODO: クライアントからコマンドを受け取ったら、entryをローカルに追加し
         //       ステートマシンにエントリを適用した後、応答する
@@ -210,14 +210,14 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
     fn send(my_index: usize, state: &entity::State, message: &message::Message) -> () {
         for (i, &(ref sender, ref receiver)) in state.channels.iter().enumerate() {
             // 自分には送らない
-            if i != my_index || true {
-                debug!("send: {}->{}, {:?}", my_index, i, message);
+            if i != my_index {
+                debug!("send({}): ->{}, {:?}", my_index, i, message);
                 sender.send(message.clone()).unwrap();
             }
         }
     }
 
-    debug!("receive_thread起動: {}, {:?}, {:?}", my_index, state, setting);
+    debug!("receive_thread起動({}): {:?}, {:?}", my_index, state, setting);
     {
         let mut socket;
         {
@@ -253,7 +253,7 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
                     }.and_then(|(size, buf, address)| {
                         // デコード
                         let message: message::Message = bincode::rustc_serialize::decode(&buf).unwrap();
-                        info!("recv UDP: {:?}", message);
+                        info!("recv UDP({}): {:?}", my_index, message);
                         // メッセージ受信処理
                         node.on_receive_for_all(&message, &address).and_then(|_|
                             node.on_receive(&message, &address)
@@ -273,5 +273,5 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
             }
         }
     }
-    debug!("receive_thread終了: {}, {:?}, {:?}", my_index, state, setting);
+    debug!("receive_thread終了({}): {:?}, {:?}", my_index, state, setting);
 }
