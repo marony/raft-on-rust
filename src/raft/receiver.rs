@@ -43,11 +43,11 @@ trait RaftNode : Debug {
     fn on_role(&self, from_role: &entity::Role) -> ();
     fn out_role(&self, to_role: &entity::Role) -> ();
 
-    fn on_receive_for_all(&self, &message: &message::Message, &address: &SocketAddr) -> Option<()> {
+    fn on_receive_for_all(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
         debug!("on_receive_for_all: {:?}", self);
         Some(())
     }
-    fn on_receive(&self, &message: &message::Message, &address: &SocketAddr) -> Option<()>;
+    fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()>;
     fn process_for_all(&self) -> Option<()> {
         debug!("process_for_all: {:?}", self);
         // TODO: commitIndex, lastAppliedのチェック
@@ -96,7 +96,7 @@ impl RaftNode for Follower {
         debug!("out_role: {:?}", self);
     }
 
-    fn on_receive(&self, &message: &message::Message, &address: &SocketAddr) -> Option<()> {
+    fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
         debug!("on_receive: {:?}", self);
         Some(())
     }
@@ -142,7 +142,7 @@ impl RaftNode for Candidate{
         debug!("out_role: {:?}", self);
     }
 
-    fn on_receive(&self, &message: &message::Message, &address: &SocketAddr) -> Option<()> {
+    fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
         debug!("on_receive: {:?}", self);
         Some(())
     }
@@ -186,7 +186,7 @@ impl RaftNode for Leader {
         debug!("out_role: {:?}", self);
     }
 
-    fn on_receive(&self, &message: &message::Message, &address: &SocketAddr) -> Option<()> {
+    fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
         debug!("on_receive: {:?}", self);
         Some(())
     }
@@ -207,12 +207,12 @@ impl RaftNode for Leader {
 
 // 他のノードからメッセージを受信するスレッド
 pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<entity::Setting>) -> () {
-    fn send(my_index: usize, state: &entity::State, message: message::Message) -> () {
+    fn send(my_index: usize, state: &entity::State, message: &message::Message) -> () {
         for (i, &(ref sender, ref receiver)) in state.channels.iter().enumerate() {
             // 自分には送らない
             if i != my_index || true {
                 debug!("send: {}->{}, {:?}", my_index, i, message);
-                sender.send(message).unwrap();
+                sender.send(message.clone()).unwrap();
             }
         }
     }
@@ -267,7 +267,7 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
                 };
                 // FIXME: デバッグコード
                 //        自分に適当なメッセージを送る
-                send(my_index, &state, message::Message::Test);
+                send(my_index, &state, &message::Message::Test);
                 // TODO: Thread.yield()にする
                 thread::sleep(wait);
             }
