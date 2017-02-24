@@ -44,12 +44,12 @@ trait RaftNode : Debug {
     fn out_role(&self, to_role: &entity::Role) -> ();
 
     fn on_receive_for_all(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive_for_all({}):", self.get_setting().server_index);
+        debug!("on_receive_for_all({}, {:?}):", self.get_setting().server_index, self.get_role());
         Some(())
     }
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()>;
     fn process_for_all(&self) -> Option<()> {
-        debug!("process_for_all({}):", self.get_setting().server_index);
+        debug!("process_for_all({}, {:?}):", self.get_setting().server_index, self.get_role());
         // TODO: commitIndex, lastAppliedのチェック
         // TODO: 受信時 term, currentTermのチェック
         Some(())
@@ -65,13 +65,18 @@ struct Follower {
 
 impl Follower {
     pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Follower {
-        {
-            // FIXME: 場所がよくない(on_roleだけでやりたい)
-            // 受信時刻を更新
-            let mut shared = state.shared.write().unwrap();
-            shared.receive_time = time::Instant::now();
-        }
-        Follower { state: state.clone(), setting: setting.clone() }
+        let f = Follower { state: state.clone(), setting: setting.clone() };
+        // FIXME: 場所がよくない(on_roleだけでやりたい)
+        // 受信時刻を更新
+        f.update_receive_time();
+        f
+    }
+
+    pub fn update_receive_time(&self) {
+        // 受信時刻を更新
+        let state = self.get_state();
+        let mut shared = state.shared.write().unwrap();
+        shared.receive_time = time::Instant::now();
     }
 }
 
@@ -87,17 +92,16 @@ impl RaftNode for Follower {
     }
 
     fn on_role(&self, from_role: &entity::Role) -> () {
-        debug!("on_role({}):", self.setting.server_index);
+        debug!("on_role({}, {:?}):", self.setting.server_index, self.get_role());
         // 受信時刻を更新
-        let mut shared = self.state.shared.write().unwrap();
-        shared.receive_time = time::Instant::now();
+        self.update_receive_time();
     }
     fn out_role(&self, to_role: &entity::Role) -> () {
-        debug!("out_role({}):", self.setting.server_index);
+        debug!("out_role({}, {:?}):", self.setting.server_index, self.get_role());
     }
 
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive({}): {:?}", self.setting.server_index, message);
+        debug!("on_receive({}, {:?}): {:?}", self.setting.server_index, self.get_role(), message);
         // TODO: AppendEntriesに返事をする
         match *message {
             message::Message::AppendEntries(term, leader_id, prev_log_index, prev_log_term, ref entries, leader_commit) => {
@@ -113,7 +117,7 @@ impl RaftNode for Follower {
         Some(())
     }
     fn process(&self) -> Option<()> {
-        debug!("process({}):", self.setting.server_index);
+        debug!("process({}, {:?}):", self.setting.server_index, self.get_role());
         // TODO: AppendEntriesか選挙がタイムアウトしたらCandidateになる
         Some(())
     }
@@ -143,22 +147,22 @@ impl RaftNode for Candidate{
     }
 
     fn on_role(&self, from_role: &entity::Role) -> () {
-        debug!("on_role({}):", self.setting.server_index);
+        debug!("on_role({}, {:?}):", self.setting.server_index, self.get_role());
         // TODO: currentTerm更新
         // TODO: 自分に投票
         // TODO: election_timeoutをリセット
         // TODO: RequestVote RPCを他のノードに送信
     }
     fn out_role(&self, to_role: &entity::Role) -> () {
-        debug!("out_role({}):", self.setting.server_index);
+        debug!("out_role({}, {:?}):", self.setting.server_index, self.get_role());
     }
 
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive({}):", self.setting.server_index);
+        debug!("on_receive({}, {:?}):", self.setting.server_index, self.get_role());
         Some(())
     }
     fn process(&self) -> Option<()> {
-        debug!("process({}):", self.setting.server_index);
+        debug!("process({}, {:?}):", self.setting.server_index, self.get_role());
         // TODO: マジョリティから投票を受け取ったらLeaderになる
         // TODO: 新しいリーダからAppendEntriesを受け取ったらFollowerになる
         // TODO: election_timeoutしたら新規に選挙を始める
@@ -190,19 +194,19 @@ impl RaftNode for Leader {
     }
 
     fn on_role(&self, from_role: &entity::Role) -> () {
-        debug!("on_role({}):", self.setting.server_index);
+        debug!("on_role({}, {:?}):", self.setting.server_index, self.get_role());
         // TODO: 選挙が終わったら最初の空のAppendEntriesを送信する
     }
     fn out_role(&self, to_role: &entity::Role) -> () {
-        debug!("out_role({}):", self.setting.server_index);
+        debug!("out_role({}, {:?}):", self.setting.server_index, self.get_role());
     }
 
     fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive({}):", self.setting.server_index);
+        debug!("on_receive({}, {:?}):", self.setting.server_index, self.get_role());
         Some(())
     }
     fn process(&self) -> Option<()> {
-        debug!("process({}):", self.setting.server_index);
+        debug!("process({}, {:?}):", self.setting.server_index, self.get_role());
         // ？？？ TODO: アイドル状態の時にelection_timeoutを防ぐために
         // TODO: クライアントからコマンドを受け取ったら、entryをローカルに追加し
         //       ステートマシンにエントリを適用した後、応答する
