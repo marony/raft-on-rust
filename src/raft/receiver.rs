@@ -222,7 +222,7 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
         for (i, &(ref sender, ref receiver)) in state.channels.iter().enumerate() {
             // 自分には送らない
             if i != my_index {
-                debug!("send({}): ->{}, {:?}", my_index, i, message);
+                debug!("internal send({}): ->{}, {:?}", my_index, i, message);
                 sender.send(message.clone()).unwrap();
             }
         }

@@ -18,7 +18,7 @@ pub fn send_thread(server_index: usize, state: Arc<entity::State>, setting: Arc<
         state.channels[server_index].1.try_recv()
     }
 
-    debug!("send_thread起動: {}, {:?}, {:?}", server_index, state, setting);
+    debug!("send_thread起動({}): {:?}, {:?}", server_index, state, setting);
     {
         let mut socket;
         let server_setting = &setting.servers[server_index];
@@ -28,7 +28,7 @@ pub fn send_thread(server_index: usize, state: Arc<entity::State>, setting: Arc<
             socket = match UdpSocket::bind("0.0.0.0:0") {
                 Ok(s) => s,
                 Err(e) => panic!("couldn't bind socket: {}", e),
-            }
+            };
         }
         {
             // 処理ループ
@@ -36,7 +36,8 @@ pub fn send_thread(server_index: usize, state: Arc<entity::State>, setting: Arc<
             while !state.b_finish.load(Ordering::Relaxed) {
                 if let Ok(message) = recv(server_index, &state) {
                     // UDP送信
-                    info!("send UDP: {}, {}, {:?}", server_index, send_address, message);
+                    debug!("internal recv({}): {:?}", server_index, message);
+                    info!("send UDP({}): {}, {:?}", server_index, send_address, message);
                     let encoded = bincode::rustc_serialize::encode(&message, bincode::SizeLimit::Infinite).unwrap();
                     socket.send_to(&encoded, send_address);
                 }
@@ -46,7 +47,7 @@ pub fn send_thread(server_index: usize, state: Arc<entity::State>, setting: Arc<
                     let my_setting = &setting.servers[setting.server_index];
                     let my_address = SocketAddrV4::new(Ipv4Addr::from_str(&my_setting.0).unwrap(), my_setting.1);
                     let message = message::Message::Test;
-                    debug!("send UDP: {}, {}, {:?}", setting.server_index, my_address, message);
+                    debug!("send UDP({}): {}, {:?}", setting.server_index, my_address, message);
                     let encoded = bincode::rustc_serialize::encode(&message, bincode::SizeLimit::Infinite).unwrap();
                     socket.send_to(&encoded, my_address);
                 }
@@ -54,5 +55,5 @@ pub fn send_thread(server_index: usize, state: Arc<entity::State>, setting: Arc<
             }
         }
     }
-    debug!("send_thread終了: {}, {:?}, {:?}", server_index, state, setting);
+    debug!("send_thread終了({}): {:?}, {:?}", server_index, state, setting);
 }
