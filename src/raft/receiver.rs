@@ -1,5 +1,7 @@
 #![feature(conservative_impl_trait)]
 
+use std::rc::Rc;
+use std::cell::RefCell;
 use std::sync::{Arc, RwLock};
 use std::{thread, time};
 use std::sync::atomic::Ordering;
@@ -26,26 +28,39 @@ trait RaftLogic : Debug {
 struct RaftNode {
     state: Arc<entity::State>,
     setting: Arc<entity::Setting>,
-    logic: Box<RaftLogic>,
+    logic: Option<Box<RaftLogic>>,
 }
 
 impl RaftNode {
-    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Box<RaftNode> {
-        let logic = Box::new(Follower { state: state.clone(), setting: setting.clone() });
-        Box::new(RaftNode { state: state.clone(), setting: setting.clone(), logic, })
+    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Rc<RefCell<RaftNode>> {
+        let node = Rc::new(RefCell::new(RaftNode { state: state.clone(), setting: setting.clone(), logic: None, }));
+        let logic = Box::new(Follower { state: state.clone(), setting: setting.clone(), node: node.clone(), });
+        {
+            let mut node2 = node.borrow_mut();
+            node2.logic = Some(logic);
+        }
+        node
     }
 
-    fn to_role(&mut self, role: entity::Role) -> () {
+    fn to_role(node: &mut Rc<RefCell<RaftNode>>, role: entity::Role) -> () {
         // FIXME: #![feature(conservative_impl_trait)]が効かない
-        let state = self.state.clone();
-        let setting = self.setting.clone();
+        let state;
+        let setting;
+        {
+            let mut node2 = node.borrow();
+            state = node2.state.clone();
+            setting = node2.setting.clone();
+        }
         {
             let shared;
             {
                 shared = state.shared.read().unwrap();
             }
             info!("{:?} -> {:?}", shared.role, role);
-            self.out_role(role);
+            {
+                let mut node2 = node.borrow_mut();
+                node2.out_role(role);
+            }
         }
         {
             let mut shared = state.shared.write().unwrap();
@@ -53,14 +68,17 @@ impl RaftNode {
         }
         let logic: Box<RaftLogic> = match role {
             entity::Role::Follower =>
-                Box::new(Follower::new(&state, &setting)),
+                Box::new(Follower::new(&state, &setting, node)),
             entity::Role::Candidate =>
-                Box::new(Candidate::new(&state, &setting)),
+                Box::new(Candidate::new(&state, &setting, node)),
             entity::Role::Leader =>
-                Box::new(Leader::new(&state, &setting)),
+                Box::new(Leader::new(&state, &setting, node)),
         };
-        self.logic = logic;
-        self.on_role(role);
+        {
+            let mut node2 = node.borrow_mut();
+            node2.logic = Some(logic);
+            node2.on_role(role);
+        }
     }
 
     fn on_receive_for_all(&mut self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
@@ -78,17 +96,21 @@ impl RaftNode {
 
 impl RaftLogic for RaftNode {
     fn on_role(&mut self, from_role: entity::Role) -> () {
-        self.logic.on_role(from_role);
+        let logic = &mut self.logic.as_mut().unwrap();
+        logic.on_role(from_role);
     }
     fn out_role(&mut self, to_role: entity::Role) -> () {
-        self.logic.out_role(to_role);
+        let logic = &mut self.logic.as_mut().unwrap();
+        logic.out_role(to_role);
     }
 
     fn on_receive(&mut self, message: &message::Message, address: &SocketAddr) -> Option<()> {
-        self.logic.on_receive(message, address)
+        let logic = &mut self.logic.as_mut().unwrap();
+        logic.on_receive(message, address)
     }
     fn process(&mut self) -> Option<()> {
-        self.logic.process()
+        let logic = &mut self.logic.as_mut().unwrap();
+        logic.process()
     }
 }
 
@@ -96,11 +118,12 @@ impl RaftLogic for RaftNode {
 struct Follower {
     state: Arc<entity::State>,
     setting: Arc<entity::Setting>,
+    node: Rc<RefCell<RaftNode>>,
 }
 
 impl Follower {
-    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Follower {
-        let f = Follower { state: state.clone(), setting: setting.clone() };
+    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>, node: &Rc<RefCell<RaftNode>>) -> Follower {
+        let f = Follower { state: state.clone(), setting: setting.clone(), node: node.clone(), };
         // FIXME: 場所がよくない(on_roleだけでやりたい)
         // 受信時刻を更新
         f.update_receive_time();
@@ -144,6 +167,10 @@ impl RaftLogic for Follower {
     fn process(&mut self) -> Option<()> {
         debug!("process({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
         // TODO: AppendEntriesか選挙がタイムアウトしたらCandidateになる
+        let shared = self.state.shared.write().unwrap();
+        if time::Instant::now() - shared.receive_time > self.setting.election_timeout {
+            // TODO: RaftNodeのto_roleをどうにか呼ばないと
+        }
         Some(())
     }
 }
@@ -152,15 +179,16 @@ impl RaftLogic for Follower {
 struct Candidate {
     state: Arc<entity::State>,
     setting: Arc<entity::Setting>,
+    node: Rc<RefCell<RaftNode>>,
 }
 
 impl Candidate {
-    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Candidate {
-        Candidate { state: state.clone(), setting: setting.clone() }
+    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>, node: &Rc<RefCell<RaftNode>>) -> Candidate {
+        Candidate { state: state.clone(), setting: setting.clone(), node: node.clone(), }
     }
 }
 
-impl RaftLogic for Candidate{
+impl RaftLogic for Candidate {
     fn on_role(&mut self, from_role: entity::Role) -> () {
         debug!("on_role({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
         // TODO: currentTerm更新
@@ -189,11 +217,12 @@ impl RaftLogic for Candidate{
 struct Leader {
     state: Arc<entity::State>,
     setting: Arc<entity::Setting>,
+    node: Rc<RefCell<RaftNode>>,
 }
 
 impl Leader {
-    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Leader {
-        Leader { state: state.clone(), setting: setting.clone() }
+    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>, node: &Rc<RefCell<RaftNode>>) -> Leader {
+        Leader { state: state.clone(), setting: setting.clone(), node: node.clone() }
     }
 }
 
@@ -278,14 +307,18 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
                         let message: message::Message = bincode::rustc_serialize::decode(&buf).unwrap();
                         info!("recv UDP({}): {:?}", my_index, message);
                         // メッセージ受信処理
-                        node.on_receive_for_all(&message, &address).and_then(|_|
-                            node.on_receive(&message, &address)
-                        )}
-                    ).and_then(|_|
+                        {
+                            let mut node2 = node.borrow_mut();
+                            node2.on_receive_for_all(&message, &address).and_then(|_|
+                                node2.on_receive(&message, &address)
+                            )
+                        }}
+                    ).and_then(|_| {
                         // サーバごとの処理
-                        node.process_for_all().and_then(|_|
-                            node.process()
-                        )
+                        let mut node2 = node.borrow_mut();
+                        node2.process_for_all().and_then(|_|
+                            node2.process()
+                        )}
                     )
                 };
                 // FIXME: デバッグコード
