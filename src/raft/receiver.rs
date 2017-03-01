@@ -17,11 +17,34 @@ use raft::entity as entity;
 use super::message as message;
 
 trait RaftLogic : Debug {
-    fn on_role(&mut self, from_role: entity::Role) -> ();
-    fn out_role(&mut self, to_role: entity::Role) -> ();
+    fn get_state(&self) -> Arc<entity::State>;
+    fn get_setting(&self) -> Arc<entity::Setting>;
 
-    fn on_receive(&mut self, message: &message::Message, &address: &SocketAddr) -> Option<()>;
-    fn process(&mut self) -> Option<()>;
+    fn on_role(&self, from_role: entity::Role) -> ();
+    fn out_role(&self, to_role: entity::Role) -> ();
+
+    fn on_receive(&self, message: &message::Message, &address: &SocketAddr) -> (bool, Option<entity::Role>);
+    fn process(&self) -> (bool, Option<entity::Role>);
+
+    fn on_receive_for_all(&self, message: &message::Message, &address: &SocketAddr) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("on_receive_for_all({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
+        (true, None)
+    }
+
+    fn process_for_all(&self) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("process_for_all({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
+        // TODO: commitIndex, lastAppliedのチェック
+        // TODO: 受信時 term, currentTermのチェック
+        (true, None)
+    }
 }
 
 #[derive(Debug)]
@@ -34,7 +57,7 @@ struct RaftNode {
 impl RaftNode {
     pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Rc<RefCell<RaftNode>> {
         let node = Rc::new(RefCell::new(RaftNode { state: state.clone(), setting: setting.clone(), logic: None, }));
-        let logic = Box::new(Follower { state: state.clone(), setting: setting.clone(), node: node.clone(), });
+        let logic = Box::new(Follower { state: state.clone(), setting: setting.clone(), });
         {
             let mut node2 = node.borrow_mut();
             node2.logic = Some(logic);
@@ -42,14 +65,13 @@ impl RaftNode {
         node
     }
 
-    fn to_role(node: &mut Rc<RefCell<RaftNode>>, role: entity::Role) -> () {
+    fn to_role(&mut self, role: entity::Role) -> () {
         // FIXME: #![feature(conservative_impl_trait)]が効かない
         let state;
         let setting;
         {
-            let mut node2 = node.borrow();
-            state = node2.state.clone();
-            setting = node2.setting.clone();
+            state = self.state.clone();
+            setting = self.setting.clone();
         }
         {
             let shared;
@@ -58,59 +80,88 @@ impl RaftNode {
             }
             info!("{:?} -> {:?}", shared.role, role);
             {
-                let mut node2 = node.borrow_mut();
-                node2.out_role(role);
+                self.out_role(role);
             }
         }
         {
+            debug!("!!!!!");
             let mut shared = state.shared.write().unwrap();
             shared.role = role;
+            debug!("!!!!!!!!!!");
         }
         let logic: Box<RaftLogic> = match role {
-            entity::Role::Follower =>
-                Box::new(Follower::new(&state, &setting, node)),
-            entity::Role::Candidate =>
-                Box::new(Candidate::new(&state, &setting, node)),
-            entity::Role::Leader =>
-                Box::new(Leader::new(&state, &setting, node)),
+            entity::Role::Follower => Box::new(Follower::new(&state, &setting)),
+            entity::Role::Candidate => Box::new(Candidate::new(&state, &setting)),
+            entity::Role::Leader => Box::new(Leader::new(&state, &setting)),
         };
         {
-            let mut node2 = node.borrow_mut();
-            node2.logic = Some(logic);
-            node2.on_role(role);
+            self.logic = Some(logic);
+        }
+        {
+            self.on_role(role);
         }
     }
 
-    fn on_receive_for_all(&mut self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
-        debug!("on_receive_for_all({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
-        Some(())
-    }
-
-    fn process_for_all(&mut self) -> Option<()> {
-        debug!("process_for_all({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
-        // TODO: commitIndex, lastAppliedのチェック
-        // TODO: 受信時 term, currentTermのチェック
-        Some(())
-    }
-}
-
-impl RaftLogic for RaftNode {
-    fn on_role(&mut self, from_role: entity::Role) -> () {
-        let logic = &mut self.logic.as_mut().unwrap();
+    fn on_role(&self, from_role: entity::Role) -> () {
+        let logic = &self.logic.as_ref().unwrap();
         logic.on_role(from_role);
     }
-    fn out_role(&mut self, to_role: entity::Role) -> () {
-        let logic = &mut self.logic.as_mut().unwrap();
+
+    fn out_role(&self, to_role: entity::Role) -> () {
+        let logic = &self.logic.as_ref().unwrap();
         logic.out_role(to_role);
     }
 
     fn on_receive(&mut self, message: &message::Message, address: &SocketAddr) -> Option<()> {
-        let logic = &mut self.logic.as_mut().unwrap();
-        logic.on_receive(message, address)
+        let c;
+        let op;
+        {
+            let logic = &self.logic.as_ref().unwrap();
+            let t = logic.on_receive(message, address);
+            c = t.0;
+            op = t.1;
+        }
+        op.map(|r| self.to_role(r));
+        if c { Some(()) } else { None }
     }
+
     fn process(&mut self) -> Option<()> {
-        let logic = &mut self.logic.as_mut().unwrap();
-        logic.process()
+        let c;
+        let op;
+        {
+            let logic = &self.logic.as_ref().unwrap();
+            let t = logic.process();
+            c = t.0;
+            op = t.1;
+        }
+        op.map(|r| self.to_role(r));
+        if c { Some(()) } else { None }
+    }
+
+    fn on_receive_for_all(&mut self, message: &message::Message, &address: &SocketAddr) -> Option<()> {
+        let c;
+        let op;
+        {
+            let logic = &self.logic.as_ref().unwrap();
+            let t = logic.on_receive_for_all(message, &address);
+            c = t.0;
+            op = t.1;
+        }
+        op.map(|r| self.to_role(r));
+        if c { Some(()) } else { None }
+    }
+
+    fn process_for_all(&mut self) -> Option<()> {
+        let c;
+        let op;
+        {
+            let logic = &self.logic.as_ref().unwrap();
+            let t = logic.process_for_all();
+            c = t.0;
+            op = t.1;
+        }
+        op.map(|r| self.to_role(r));
+        if c { Some(()) } else { None }
     }
 }
 
@@ -118,12 +169,11 @@ impl RaftLogic for RaftNode {
 struct Follower {
     state: Arc<entity::State>,
     setting: Arc<entity::Setting>,
-    node: Rc<RefCell<RaftNode>>,
 }
 
 impl Follower {
-    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>, node: &Rc<RefCell<RaftNode>>) -> Follower {
-        let f = Follower { state: state.clone(), setting: setting.clone(), node: node.clone(), };
+    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Follower {
+        let f = Follower { state: state.clone(), setting: setting.clone(), };
         // FIXME: 場所がよくない(on_roleだけでやりたい)
         // 受信時刻を更新
         f.update_receive_time();
@@ -132,24 +182,44 @@ impl Follower {
 
     pub fn update_receive_time(&self) {
         // 受信時刻を更新
-        let state = &self.state;
+        let state = self.get_state();
         let mut shared = state.shared.write().unwrap();
         shared.receive_time = time::Instant::now();
     }
 }
 
 impl RaftLogic for Follower {
-    fn on_role(&mut self, from_role: entity::Role) -> () {
-        debug!("on_role({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
+    fn get_state(&self) -> Arc<entity::State> {
+        self.state.clone()
+    }
+    fn get_setting(&self) -> Arc<entity::Setting>
+    {
+        self.setting.clone()
+    }
+
+    fn on_role(&self, from_role: entity::Role) -> () {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("on_role({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
         // 受信時刻を更新
         self.update_receive_time();
     }
-    fn out_role(&mut self, to_role: entity::Role) -> () {
-        debug!("out_role({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
+    fn out_role(&self, to_role: entity::Role) -> () {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("out_role({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
     }
 
-    fn on_receive(&mut self, message: &message::Message, address: &SocketAddr) -> Option<()> {
-        debug!("on_receive({}, {:?}): {:?}", self.setting.server_index, self.state.shared.read().unwrap().role, message);
+    fn on_receive(&self, message: &message::Message, address: &SocketAddr) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("on_receive({}, {:?}): {:?}", setting.server_index, state.shared.read().unwrap().role, message);
+        }
         // TODO: AppendEntriesに返事をする
         match *message {
             message::Message::AppendEntries(term, leader_id, prev_log_index, prev_log_term, ref entries, leader_commit) => {
@@ -162,16 +232,28 @@ impl RaftLogic for Follower {
             }
             _ => {}
         };
-        Some(())
+        (true, None)
     }
-    fn process(&mut self) -> Option<()> {
-        debug!("process({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
-        // TODO: AppendEntriesか選挙がタイムアウトしたらCandidateになる
-        let shared = self.state.shared.write().unwrap();
-        if time::Instant::now() - shared.receive_time > self.setting.election_timeout {
-            // TODO: RaftNodeのto_roleをどうにか呼ばないと
+    fn process(&self) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("process({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
         }
-        Some(())
+        // TODO: AppendEntriesか選挙がタイムアウトしたらCandidateになる
+        let receive_time;
+        {
+            let state = self.get_state();
+            let shared = state.shared.read().unwrap();
+            receive_time = shared.receive_time;
+        }
+        {
+            let setting = self.get_setting();
+            if time::Instant::now() - receive_time > setting.election_timeout {
+                return (false, Some(entity::Role::Candidate));
+            }
+        }
+        (true, None)
     }
 }
 
@@ -179,37 +261,60 @@ impl RaftLogic for Follower {
 struct Candidate {
     state: Arc<entity::State>,
     setting: Arc<entity::Setting>,
-    node: Rc<RefCell<RaftNode>>,
 }
 
 impl Candidate {
-    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>, node: &Rc<RefCell<RaftNode>>) -> Candidate {
-        Candidate { state: state.clone(), setting: setting.clone(), node: node.clone(), }
+    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Candidate {
+        Candidate { state: state.clone(), setting: setting.clone(), }
     }
 }
 
 impl RaftLogic for Candidate {
-    fn on_role(&mut self, from_role: entity::Role) -> () {
-        debug!("on_role({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
+    fn get_state(&self) -> Arc<entity::State> {
+        self.state.clone()
+    }
+    fn get_setting(&self) -> Arc<entity::Setting>
+    {
+        self.setting.clone()
+    }
+
+    fn on_role(&self, from_role: entity::Role) -> () {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("on_role({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
         // TODO: currentTerm更新
         // TODO: 自分に投票
         // TODO: election_timeoutをリセット
         // TODO: RequestVote RPCを他のノードに送信
     }
-    fn out_role(&mut self, to_role: entity::Role) -> () {
-        debug!("out_role({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
+    fn out_role(&self, to_role: entity::Role) -> () {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("out_role({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
     }
 
-    fn on_receive(&mut self, message: &message::Message, address: &SocketAddr) -> Option<()> {
-        debug!("on_receive({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
-        Some(())
+    fn on_receive(&self, message: &message::Message, address: &SocketAddr) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("on_receive({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
+        (true, None)
     }
-    fn process(&mut self) -> Option<()> {
-        debug!("process({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
+    fn process(&self) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("process({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
         // TODO: マジョリティから投票を受け取ったらLeaderになる
         // TODO: 新しいリーダからAppendEntriesを受け取ったらFollowerになる
         // TODO: election_timeoutしたら新規に選挙を始める
-        Some(())
+        (true, None)
     }
 }
 
@@ -217,30 +322,53 @@ impl RaftLogic for Candidate {
 struct Leader {
     state: Arc<entity::State>,
     setting: Arc<entity::Setting>,
-    node: Rc<RefCell<RaftNode>>,
 }
 
 impl Leader {
-    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>, node: &Rc<RefCell<RaftNode>>) -> Leader {
-        Leader { state: state.clone(), setting: setting.clone(), node: node.clone() }
+    pub fn new(state: &Arc<entity::State>, setting: &Arc<entity::Setting>) -> Leader {
+        Leader { state: state.clone(), setting: setting.clone(), }
     }
 }
 
 impl RaftLogic for Leader {
-    fn on_role(&mut self, from_role: entity::Role) -> () {
-        debug!("on_role({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
-        // TODO: 選挙が終わったら最初の空のAppendEntriesを送信する
+    fn get_state(&self) -> Arc<entity::State> {
+        self.state.clone()
     }
-    fn out_role(&mut self, to_role: entity::Role) -> () {
-        debug!("out_role({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
+    fn get_setting(&self) -> Arc<entity::Setting>
+    {
+        self.setting.clone()
     }
 
-    fn on_receive(&mut self, message: &message::Message, address: &SocketAddr) -> Option<()> {
-        debug!("on_receive({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
-        Some(())
+    fn on_role(&self, from_role: entity::Role) -> () {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("on_role({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
+        // TODO: 選挙が終わったら最初の空のAppendEntriesを送信する
     }
-    fn process(&mut self) -> Option<()> {
-        debug!("process({}, {:?}):", self.setting.server_index, self.state.shared.read().unwrap().role);
+    fn out_role(&self, to_role: entity::Role) -> () {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("out_role({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
+    }
+
+    fn on_receive(&self, message: &message::Message, address: &SocketAddr) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("on_receive({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
+        (true, None)
+    }
+    fn process(&self) -> (bool, Option<entity::Role>) {
+        {
+            let state = self.get_state();
+            let setting = self.get_setting();
+            debug!("process({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
+        }
         // ？？？ TODO: アイドル状態の時にelection_timeoutを防ぐために
         // TODO: クライアントからコマンドを受け取ったら、entryをローカルに追加し
         //       ステートマシンにエントリを適用した後、応答する
@@ -250,7 +378,7 @@ impl RaftLogic for Leader {
         //       失敗ならば、nextIndexを減らしてリトライする
         // TODO: 半数以上が、N > commitIndex && matchIndex[i] >= N && term == currentTermならば
         //       commitIndex = N
-        Some(())
+        (true, None)
     }
 }
 
@@ -281,7 +409,7 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
                 .expect("failed to set_read_timeout");
         }
         // 起動時にFollowerになる
-        let node = &mut RaftNode::new(&state, &setting);
+        let node = &RaftNode::new(&state, &setting);
         {
             // 処理ループ
             let wait = setting.receive_thread_loop_wait;
