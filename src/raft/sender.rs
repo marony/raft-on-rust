@@ -41,16 +41,6 @@ pub fn send_thread(server_index: usize, state: Arc<entity::State>, setting: Arc<
                     let encoded = bincode::rustc_serialize::encode(&message, bincode::SizeLimit::Infinite).unwrap();
                     socket.send_to(&encoded, send_address);
                 }
-                {
-                    // FIXME: デバッグコード
-                    //        自分に適当なUDPパケットを送る
-                    let my_setting = &setting.servers[setting.server_index];
-                    let my_address = SocketAddrV4::new(Ipv4Addr::from_str(&my_setting.0).unwrap(), my_setting.1);
-                    let message = message::Message::Test;
-                    debug!("send UDP({}): {}, {:?}", setting.server_index, my_address, message);
-                    let encoded = bincode::rustc_serialize::encode(&message, bincode::SizeLimit::Infinite).unwrap();
-                    socket.send_to(&encoded, my_address);
-                }
                 thread::sleep(wait);
             }
         }

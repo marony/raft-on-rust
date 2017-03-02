@@ -84,10 +84,8 @@ impl RaftNode {
             }
         }
         {
-            debug!("!!!!!");
             let mut shared = state.shared.write().unwrap();
             shared.role = role;
-            debug!("!!!!!!!!!!");
         }
         let logic: Box<RaftLogic> = match role {
             entity::Role::Follower => Box::new(Follower::new(&state, &setting)),
@@ -240,7 +238,7 @@ impl RaftLogic for Follower {
             let setting = self.get_setting();
             debug!("process({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
         }
-        // TODO: AppendEntriesか選挙がタイムアウトしたらCandidateになる
+        // AppendEntriesか選挙がタイムアウトしたらCandidateになる
         let receive_time;
         {
             let state = self.get_state();
@@ -285,6 +283,11 @@ impl RaftLogic for Candidate {
             debug!("on_role({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
         }
         // TODO: currentTerm更新
+        {
+            let state = self.get_state();
+            let mut persistent = state.persistent.write().unwrap();
+            persistent.current_term = persistent.current_term + 1;
+        }
         // TODO: 自分に投票
         // TODO: election_timeoutをリセット
         // TODO: RequestVote RPCを他のノードに送信
@@ -303,6 +306,8 @@ impl RaftLogic for Candidate {
             let setting = self.get_setting();
             debug!("on_receive({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
         }
+        // TODO: マジョリティから投票を受け取ったらLeaderになる
+        // TODO: 新しいリーダからAppendEntriesを受け取ったらFollowerになる
         (true, None)
     }
     fn process(&self) -> (bool, Option<entity::Role>) {
@@ -311,8 +316,6 @@ impl RaftLogic for Candidate {
             let setting = self.get_setting();
             debug!("process({}, {:?}):", setting.server_index, state.shared.read().unwrap().role);
         }
-        // TODO: マジョリティから投票を受け取ったらLeaderになる
-        // TODO: 新しいリーダからAppendEntriesを受け取ったらFollowerになる
         // TODO: election_timeoutしたら新規に選挙を始める
         (true, None)
     }
@@ -426,10 +429,24 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
                             if size > 0 {
                                 Some((size, buf, address))
                             } else {
+                                debug!("recv_from: size == 0");
                                 None
                             }
                         },
-                        Err(e) => panic!("couldn't bind socket: {}", e),
+                        Err(e) => {
+                            match e.raw_os_error() {
+                                Some(10060) => {
+                                    // サーバごとの処理
+                                    debug!("socket error: 10060");
+                                    let mut node2 = node.borrow_mut();
+                                    node2.process_for_all().and_then(|_|
+                                        node2.process()
+                                    );
+                                    None
+                                },
+                                _ => panic!("couldn't bind socket: {}", e),
+                            }
+                        },
                     }.and_then(|(size, buf, address)| {
                         // デコード
                         let message: message::Message = bincode::rustc_serialize::decode(&buf).unwrap();
@@ -449,9 +466,6 @@ pub fn receive_thread(my_index: usize, state: Arc<entity::State>, setting: Arc<e
                         )}
                     )
                 };
-                // FIXME: デバッグコード
-                //        自分に適当なメッセージを送る
-                send(my_index, &state, &message::Message::Test);
                 // TODO: Thread.yield()にする
                 thread::sleep(wait);
             }
